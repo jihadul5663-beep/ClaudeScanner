@@ -12,11 +12,37 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Unzip project (if source is zipped at repo root)
+      - name: Locate project (auto-detect zip name and folder name)
+        id: locate
         run: |
-          if [ -f PortScanner-Android.zip ]; then
-            unzip -o PortScanner-Android.zip
+          set -e
+
+          # Step 1: if there's any .zip at the repo root, unzip it — whatever it's called.
+          ZIP_FILE=$(find . -maxdepth 1 -iname "*.zip" | head -n 1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Found zip: $ZIP_FILE"
+            unzip -o "$ZIP_FILE" -d extracted_project
           fi
+
+          # Step 2: find the Android project root by locating settings.gradle
+          # anywhere in the repo — no need to know the folder's name in advance.
+          PROJECT_DIR=$(find . -maxdepth 5 \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            -not -path "*/build/*" | head -n 1 | xargs -r dirname)
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "::error::Could not find an Android project (no settings.gradle found anywhere in the repo)."
+            exit 1
+          fi
+
+          echo "Detected project directory: $PROJECT_DIR"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+          # Step 3: detect the app module name too (usually "app") instead of hardcoding it.
+          APP_MODULE_DIR=$(find "$PROJECT_DIR" -maxdepth 2 -name "AndroidManifest.xml" \
+            -path "*/src/main/*" | head -n 1 | sed -E "s|/src/main/AndroidManifest.xml||")
+          APP_MODULE_NAME=$(basename "$APP_MODULE_DIR")
+          echo "Detected app module: $APP_MODULE_NAME"
+          echo "app_module=$APP_MODULE_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -28,19 +54,19 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Generate Gradle wrapper jar
-        working-directory: PortScanner
+        working-directory: ${{ steps.locate.outputs.project_dir }}
         run: gradle wrapper --gradle-version 8.6
 
       - name: Grant execute permission for gradlew
-        working-directory: PortScanner
+        working-directory: ${{ steps.locate.outputs.project_dir }}
         run: chmod +x gradlew
 
       - name: Build debug APK
-        working-directory: PortScanner
+        working-directory: ${{ steps.locate.outputs.project_dir }}
         run: ./gradlew assembleDebug --stacktrace
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PortScanner-debug-apk
-          path: PortScanner/app/build/outputs/apk/debug/app-debug.apk
+          name: app-debug-apk
+          path: ${{ steps.locate.outputs.project_dir }}/${{ steps.locate.outputs.app_module }}/build/outputs/apk/debug/app-debug.apk
